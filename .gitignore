@@ -1,0 +1,4 @@
+outputs/\ndata/real/\n.ipynb_checkpoints/
+.venv/
+outputs/confusion*
+data/*

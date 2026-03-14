@@ -56,10 +56,10 @@ ARCH_NOTES = (
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
     "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (5 features). MAX_EPOCHS=200 for longer cosine schedule."
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=60. Label smoothing=0.1."
 )
 
-MAX_EPOCHS = 200
+MAX_EPOCHS = 60
 MIXUP_ALPHA = 0.0  # Mixup disabled
 
 # Training budget (seconds) per fold — do NOT change this
@@ -544,7 +544,7 @@ def main():
         optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
         scaler    = GradScaler(enabled=USE_AMP)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS, eta_min=1e-6)
-        criterion = nn.CrossEntropyLoss()
+        criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
         # Train with budget
         t_fold_start = time.time()

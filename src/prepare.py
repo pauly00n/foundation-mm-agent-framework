@@ -535,9 +535,16 @@ def eval(
     model: nn.Module,
     val_loader: DataLoader,
     device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu"),
+    clinical_mean: torch.Tensor = None,
+    clinical_std: torch.Tensor = None,
 ) -> Dict[str, float]:
     """
     Evaluate *model* on *val_loader*.
+
+    Args:
+        clinical_mean: Training-set clinical feature means for z-score normalization.
+        clinical_std:  Training-set clinical feature stds for z-score normalization.
+            Both must be provided for models trained with normalized clinical features.
 
     Returns:
         {"val_acc": float, "val_loss": float}
@@ -559,6 +566,11 @@ def eval(
         if len(batch) == 3:
             volumes, clinical, labels = batch
             clinical = clinical.to(device, non_blocking=True)
+            # Apply z-score normalization if stats were provided
+            if clinical_mean is not None and clinical_std is not None:
+                mean = clinical_mean.to(device)
+                std = clinical_std.to(device)
+                clinical = (clinical - mean) / (std + 1e-8)
         else:
             volumes, labels = batch
             clinical = None

@@ -4,27 +4,25 @@ train.py — THE FILE THE AGENT ITERATES ON.
 The agent may freely modify this file between runs to test hypotheses.
 prepare.py is fixed and must never be modified.
 
-Baseline architecture: 4-block 3D CNN
-  Conv3d → BN → ReLU → MaxPool3d  (×4)
-  → GlobalAvgPool → Dropout → Linear(256, NUM_CLASSES)
+Architecture: 4-block ResNet+SE 3D CNN with clinical gated fusion.
+Training: 5-fold stratified cross-validation on all 100 patients (80/20).
+Each fold trains one model, validates on the held-out 20.
+Final metric = mean val_acc across 5 folds.
 
-Training budget: exactly 3 minutes wall-clock time per seed.
-The standard run command executes 3 seeds and averages the results:
+Run command:
+    uv run src/train.py
 
-    for SEED in 42 7 13; do SEED=$SEED uv run src/train.py; done
-
-Results are appended to outputs/results.jsonl after every seed.
-The agent reads the last 3 entries and averages val_acc / test_acc as truth.
+Results are appended to outputs/results.jsonl after each experiment.
 """
 
 import os
 import sys
 import time
 import json
-import uuid
 import math
 import random
 import logging
+import subprocess
 from pathlib import Path
 from datetime import datetime, timezone
 
@@ -33,6 +31,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.cuda.amp import GradScaler, autocast
+from torch.utils.data import Dataset, DataLoader
 
 # ---------------------------------------------------------------------------
 # Ensure repo root is on sys.path so we can import prepare.py from src/
@@ -40,7 +39,7 @@ from torch.cuda.amp import GradScaler, autocast
 REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO_ROOT / "src"))
 
-from prepare import get_dataloader, NUM_CLASSES  # noqa: E402
+from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 
 # ===========================================================================
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
@@ -55,24 +54,26 @@ WEIGHT_DECAY = 1e-1        # WD=0.1
 ARCH_NOTES = (
     "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128) + ClinicalEncoder MLP(5→64→128). "
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
-    "120 epochs each, ensemble=3. CosineAnnealingLR T_max=120. "
+    "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
     "Clinical z-score normalization (5 features)."
 )
 
-# Hard cap on epochs per model in ensemble
-MAX_EPOCHS = 120   # sweet spot for N_ENSEMBLE=3
-N_ENSEMBLE = 3     # ensemble of 3 models
+MAX_EPOCHS = 120
 MIXUP_ALPHA = 0.0  # Mixup disabled
 
-# Training budget (seconds) — do NOT change this
-BUDGET_SECONDS = 180  # 3 minutes
+# Training budget (seconds) per fold — do NOT change this
+BUDGET_SECONDS = 180  # 3 minutes per fold
 
 # Mixed precision — set False if you hit numerical issues
 USE_AMP = True
 
 # Number of DataLoader workers
 NUM_WORKERS = 4
+
+# 5-fold CV settings
+N_FOLDS = 5
+FOLD_SEEDS = [42, 7, 13, 99, 0]  # one fixed seed per fold
 
 # ===========================================================================
 # Paths
@@ -81,14 +82,32 @@ OUTPUTS_DIR  = REPO_ROOT / "outputs"
 RESULTS_FILE = OUTPUTS_DIR / "results.jsonl"
 OUTPUTS_DIR.mkdir(parents=True, exist_ok=True)
 
+
+def get_git_commit_hash() -> str:
+    """Return the current git commit hash (short, 12 chars). Falls back to timestamp."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=REPO_ROOT, capture_output=True, text=True, check=True,
+        )
+        return result.stdout.strip()
+    except Exception:
+        return datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S")
+
 # ===========================================================================
-# Logging
+# Logging — all output goes to run.log (overwritten each run)
 # ===========================================================================
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    datefmt="%H:%M:%S",
-)
+LOG_FILE = REPO_ROOT / "run.log"
+_log_formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s", datefmt="%H:%M:%S")
+_root_logger = logging.getLogger()
+_root_logger.setLevel(logging.INFO)
+_root_logger.handlers.clear()
+_fh = logging.FileHandler(LOG_FILE, mode="w")
+_fh.setFormatter(_log_formatter)
+_root_logger.addHandler(_fh)
+_sh = logging.StreamHandler(sys.stdout)
+_sh.setFormatter(_log_formatter)
+_root_logger.addHandler(_sh)
 log = logging.getLogger(__name__)
 
 # ===========================================================================
@@ -99,6 +118,27 @@ log.info("Using device: %s", DEVICE)
 if DEVICE.type == "cuda":
     log.info("GPU: %s  (%.1f GB)", torch.cuda.get_device_name(0),
              torch.cuda.get_device_properties(0).total_memory / 1e9)
+
+
+# ===========================================================================
+# Dataset for loading individual .pt files
+# ===========================================================================
+
+class PTFileDataset(Dataset):
+    """Load a list of .pt files as a dataset."""
+
+    def __init__(self, pt_files: list):
+        self.files = pt_files
+
+    def __len__(self) -> int:
+        return len(self.files)
+
+    def __getitem__(self, idx: int):
+        sample   = torch.load(self.files[idx], weights_only=True)
+        volume   = sample["volume"].float()                          # (1, D, H, W)
+        label    = torch.tensor(sample["label"], dtype=torch.long)
+        clinical = sample.get("clinical", torch.zeros(5)).float()   # (5,)
+        return volume, clinical, label
 
 
 # ===========================================================================
@@ -276,7 +316,7 @@ class MultiModalCardiacNet(nn.Module):
 # Training loop
 # ===========================================================================
 
-# Global clinical normalization stats (set in main() from training data)
+# Global clinical normalization stats (reset per fold from that fold's training data)
 _CLINICAL_MEAN: torch.Tensor = None
 _CLINICAL_STD:  torch.Tensor = None
 
@@ -359,205 +399,241 @@ def train_one_epoch(
     return total_loss, total_correct, total_samples, False
 
 
-def main():
-    # ------------------------------------------------------------------
-    # Seed — read from SEED env var so the 3-seed loop can pass different
-    # values without modifying this file:
-    #   for SEED in 42 7 13; do SEED=$SEED uv run src/train.py; done
-    # ------------------------------------------------------------------
-    seed = int(os.environ.get("SEED", 42))
-    random.seed(seed)
-    np.random.seed(seed)
-    torch.manual_seed(seed)
-    torch.cuda.manual_seed_all(seed)
+@torch.no_grad()
+def evaluate_with_tta(model, loader):
+    """Evaluate a single model with TTA (all H/V/D flip combinations).
+    Returns val_acc, val_loss, per-class accuracy dict, and confusion matrix."""
+    model.eval()
+    model.to(DEVICE)
+    crit = nn.CrossEntropyLoss()
+    total_loss    = 0.0
+    total_correct = 0
+    total_samples = 0
+    conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int32)
+    tta_flips = [
+        [], [[-1]], [[-2]], [[-3]],
+        [[-1], [-2]], [[-1], [-3]], [[-2], [-3]], [[-1], [-2], [-3]],
+    ]
+    for batch in loader:
+        volumes, clinical, labels = batch
+        volumes  = volumes.to(DEVICE, non_blocking=True)
+        clinical = clinical.to(DEVICE, non_blocking=True)
+        labels   = labels.to(DEVICE, non_blocking=True)
+        clinical = normalize_clinical(clinical)
+        B = volumes.size(0)
+        probs_sum = torch.zeros(B, NUM_CLASSES, device=DEVICE)
+        n_passes = 0
+        for flips in tta_flips:
+            aug = volumes.clone()
+            for dims in flips:
+                aug = torch.flip(aug, dims=dims)
+            probs_sum += torch.softmax(model(aug, clinical), dim=1)
+            n_passes += 1
+        avg_probs = probs_sum / n_passes
+        preds = avg_probs.argmax(dim=1)
+        # Loss on the base (non-augmented) logits
+        logits = model(volumes, clinical)
+        loss = crit(logits, labels)
+        total_loss    += loss.item() * B
+        total_correct += (preds == labels).sum().item()
+        total_samples += B
+        for t, p in zip(labels.cpu().numpy(), preds.cpu().numpy()):
+            conf_matrix[int(t), int(p)] += 1
 
-    experiment_id = str(uuid.uuid4())[:8]
-    log.info("=== Experiment %s  (seed=%d) ===", experiment_id, seed)
+    per_class_acc = {}
+    for cls_idx in range(NUM_CLASSES):
+        cls_total = conf_matrix[cls_idx].sum()
+        cls_correct = conf_matrix[cls_idx, cls_idx]
+        per_class_acc[IDX_TO_LABEL[cls_idx]] = (
+            round(float(cls_correct) / float(cls_total), 4) if cls_total > 0 else 0.0
+        )
+
+    return {
+        "val_acc":       total_correct / max(total_samples, 1),
+        "val_loss":      total_loss    / max(total_samples, 1),
+        "per_class_acc": per_class_acc,
+        "conf_matrix":   conf_matrix,
+    }
+
+
+def collect_all_pt_files():
+    """Collect all 100 .pt files from train/val/test dirs, return sorted list + labels."""
+    all_files = []
+    for split in ["train", "val", "test"]:
+        split_dir = DATA_PROC / split
+        if split_dir.exists():
+            all_files.extend(sorted(split_dir.glob("*.pt")))
+    # Sort by patient name for determinism
+    all_files.sort(key=lambda p: p.stem)
+
+    # Extract labels
+    labels = []
+    for f in all_files:
+        sample = torch.load(f, weights_only=True)
+        labels.append(int(sample["label"]))
+
+    return all_files, labels
+
+
+def make_stratified_folds(all_files, labels, n_folds=5, random_state=42):
+    """Create n_folds stratified splits. Returns list of (train_files, val_files)."""
+    from sklearn.model_selection import StratifiedKFold
+    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=random_state)
+    folds = []
+    for train_idx, val_idx in skf.split(all_files, labels):
+        train_files = [all_files[i] for i in train_idx]
+        val_files   = [all_files[i] for i in val_idx]
+        folds.append((train_files, val_files))
+    return folds
+
+
+def main():
+    experiment_id = get_git_commit_hash()
+    log.info("=== Experiment %s  (5-fold CV) ===", experiment_id)
     log.info("LR=%.2e  BS=%d  DROPOUT=%.2f  AMP=%s", LR, BATCH_SIZE, DROPOUT, USE_AMP)
     log.info("Arch: %s", ARCH_NOTES)
 
     # ------------------------------------------------------------------
-    # Data
+    # Collect all 100 patients and create 5 stratified folds
     # ------------------------------------------------------------------
-    train_loader = get_dataloader(
-        "train", batch_size=BATCH_SIZE, shuffle=True, num_workers=NUM_WORKERS
-    )
-    val_loader = get_dataloader(
-        "val", batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
-    )
-    log.info(
-        "Dataset: %d train  %d val batches (BS=%d)",
-        len(train_loader), len(val_loader), BATCH_SIZE,
-    )
+    all_files, all_labels = collect_all_pt_files()
+    log.info("Total patients: %d", len(all_files))
+    folds = make_stratified_folds(all_files, all_labels, n_folds=N_FOLDS, random_state=42)
+
+    n_params = sum(p.numel() for p in MultiModalCardiacNet().parameters() if p.requires_grad)
+    log.info("Model parameters: %s", f"{n_params:,}")
 
     # ------------------------------------------------------------------
-    # Compute clinical feature normalization stats from training set
-    # Features: [Height, Weight, EDV, ESV, EF]
+    # Train one model per fold
     # ------------------------------------------------------------------
     global _CLINICAL_MEAN, _CLINICAL_STD
-    all_clinical = []
-    for _, clinical, _ in train_loader:
-        all_clinical.append(clinical)
-    all_clinical = torch.cat(all_clinical, dim=0)  # (N_train, 5)
-    _CLINICAL_MEAN = all_clinical.mean(dim=0).to(DEVICE)
-    _CLINICAL_STD  = all_clinical.std(dim=0).to(DEVICE)
-    log.info("Clinical mean: %s", _CLINICAL_MEAN.cpu().numpy().round(2))
-    log.info("Clinical std:  %s", _CLINICAL_STD.cpu().numpy().round(2))
+    fold_results = []
+    overall_conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int32)
+    experiment_start = time.time()
 
-    # ------------------------------------------------------------------
-    # Model, optimiser, loss
-    # ------------------------------------------------------------------
-    criterion = nn.CrossEntropyLoss()
+    for fold_idx, (train_files, val_files) in enumerate(folds):
+        fold_seed = FOLD_SEEDS[fold_idx]
+        random.seed(fold_seed)
+        np.random.seed(fold_seed)
+        torch.manual_seed(fold_seed)
+        torch.cuda.manual_seed_all(fold_seed)
 
-    _tmp = MultiModalCardiacNet(num_classes=NUM_CLASSES, dropout=DROPOUT)
-    n_params = sum(p.numel() for p in _tmp.parameters() if p.requires_grad)
-    log.info("Model parameters per member: %s  (ensemble size: %d)", f"{n_params:,}", N_ENSEMBLE)
-    del _tmp
+        log.info("=== Fold %d/%d  (seed=%d, train=%d, val=%d) ===",
+                 fold_idx + 1, N_FOLDS, fold_seed, len(train_files), len(val_files))
 
-    # ------------------------------------------------------------------
-    # 3-minute budget: train N_ENSEMBLE models, ensemble at inference
-    # ------------------------------------------------------------------
-    t_start      = time.time()
-    deadline     = t_start + BUDGET_SECONDS
-    ensemble_models = []
-    total_epochs = 0
-    timed_out    = False
+        # Build dataloaders for this fold
+        train_dataset = PTFileDataset(train_files)
+        val_dataset   = PTFileDataset(val_files)
+        train_loader  = DataLoader(train_dataset, batch_size=BATCH_SIZE, shuffle=True,
+                                   num_workers=NUM_WORKERS, pin_memory=True, drop_last=True)
+        val_loader    = DataLoader(val_dataset, batch_size=BATCH_SIZE, shuffle=False,
+                                   num_workers=NUM_WORKERS, pin_memory=True)
 
-    for m_idx in range(N_ENSEMBLE):
-        if time.time() >= deadline:
-            log.info("Budget exhausted before training member %d.", m_idx + 1)
-            break
+        # Compute clinical normalization stats from this fold's training set
+        all_clinical = []
+        for _, clinical, _ in train_loader:
+            all_clinical.append(clinical)
+        all_clinical = torch.cat(all_clinical, dim=0)
+        _CLINICAL_MEAN = all_clinical.mean(dim=0).to(DEVICE)
+        _CLINICAL_STD  = all_clinical.std(dim=0).to(DEVICE)
+        log.info("  Clinical mean: %s", _CLINICAL_MEAN.cpu().numpy().round(2))
+        log.info("  Clinical std:  %s", _CLINICAL_STD.cpu().numpy().round(2))
 
-        log.info("=== Training ensemble member %d/%d (%.1fs elapsed) ===",
-                 m_idx + 1, N_ENSEMBLE, time.time() - t_start)
-
+        # Model, optimizer, loss
         model     = MultiModalCardiacNet(num_classes=NUM_CLASSES, dropout=DROPOUT).to(DEVICE)
         optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
         scaler    = GradScaler(enabled=USE_AMP)
         scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=MAX_EPOCHS, eta_min=1e-6)
+        criterion = nn.CrossEntropyLoss()
 
+        # Train with budget
+        t_fold_start = time.time()
+        deadline = t_fold_start + BUDGET_SECONDS
         epoch = 0
+        timed_out = False
+
         while time.time() < deadline and epoch < MAX_EPOCHS:
             epoch += 1
-            total_epochs += 1
-
             loss_sum, n_correct, n_total, timed_out = train_one_epoch(
                 model, train_loader, optimizer, criterion, scaler, deadline, scheduler
             )
-
-            if n_total > 0 and epoch % 10 == 0:
-                log.info("  M%d E%d/%d  train_loss=%.4f  train_acc=%.4f",
-                         m_idx+1, epoch, MAX_EPOCHS,
-                         loss_sum/n_total, n_correct/n_total)
-
+            if n_total > 0 and epoch % 20 == 0:
+                log.info("  Fold %d E%d/%d  train_loss=%.4f  train_acc=%.4f",
+                         fold_idx + 1, epoch, MAX_EPOCHS,
+                         loss_sum / n_total, n_correct / n_total)
             if timed_out:
                 break
-
             if scheduler is not None:
                 scheduler.step()
 
-        ensemble_models.append(model)
-        log.info("  Member %d trained (%d epochs)", m_idx + 1, epoch)
+        fold_time = time.time() - t_fold_start
+        log.info("  Fold %d: %d epochs in %.1fs", fold_idx + 1, epoch, fold_time)
 
-    log.info("Ensemble: %d models trained, %d total epochs", len(ensemble_models), total_epochs)
+        # Evaluate this fold
+        metrics = evaluate_with_tta(model, val_loader)
+        log.info("  Fold %d RESULTS → val_acc=%.4f  val_loss=%.4f",
+                 fold_idx + 1, metrics["val_acc"], metrics["val_loss"])
+        log.info("  Fold %d per-class: %s", fold_idx + 1, metrics["per_class_acc"])
 
-    # Use last model reference for logging (actual eval uses ensemble below)
-    epoch = total_epochs
+        fold_results.append({
+            "fold": fold_idx + 1,
+            "seed": fold_seed,
+            "val_acc": metrics["val_acc"],
+            "val_loss": metrics["val_loss"],
+            "per_class_acc": metrics["per_class_acc"],
+            "epochs": epoch,
+            "wall_time_s": round(fold_time, 1),
+            "val_patients": [f.stem for f in val_files],
+        })
+        overall_conf_matrix += metrics["conf_matrix"]
 
-    total_time = time.time() - t_start
-    log.info("Training finished after %.1fs", total_time)
+        # Free GPU memory
+        del model, optimizer, scaler, scheduler
+        torch.cuda.empty_cache()
+
+    total_time = time.time() - experiment_start
 
     # ------------------------------------------------------------------
-    # Final evaluation on validation set (ensemble)
+    # Aggregate results across folds
     # ------------------------------------------------------------------
-    log.info("Running ensemble validation (%d models) …", len(ensemble_models))
+    fold_accs  = [r["val_acc"] for r in fold_results]
+    fold_losses = [r["val_loss"] for r in fold_results]
+    mean_acc  = np.mean(fold_accs)
+    std_acc   = np.std(fold_accs)
+    mean_loss = np.mean(fold_losses)
 
-    @torch.no_grad()
-    def ensemble_evaluate(models, loader):
-        """Evaluate with ensemble + TTA (all H/V/D flip combinations).
-        Returns val_acc, val_loss, per-class accuracy dict, and confusion matrix."""
-        for m in models:
-            m.eval()
-            m.to(DEVICE)
-        crit = nn.CrossEntropyLoss()
-        total_loss    = 0.0
-        total_correct = 0
-        total_samples = 0
-        # Confusion matrix: rows=true, cols=pred
-        conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int32)
-        tta_flips = [
-            [], [[-1]], [[-2]], [[-3]],
-            [[-1], [-2]], [[-1], [-3]], [[-2], [-3]], [[-1], [-2], [-3]],
-        ]
-        for batch in loader:
-            volumes, clinical, labels = batch
-            volumes  = volumes.to(DEVICE, non_blocking=True)
-            clinical = clinical.to(DEVICE, non_blocking=True)
-            labels   = labels.to(DEVICE, non_blocking=True)
-            clinical = normalize_clinical(clinical)
-            B = volumes.size(0)
-            probs_sum = torch.zeros(B, NUM_CLASSES, device=DEVICE)
-            n_passes = 0
-            for m in models:
-                for flips in tta_flips:
-                    aug = volumes.clone()
-                    for dims in flips:
-                        aug = torch.flip(aug, dims=dims)
-                    probs_sum += torch.softmax(m(aug, clinical), dim=1)
-                    n_passes += 1
-            avg_probs = probs_sum / n_passes
-            preds = avg_probs.argmax(dim=1)
-            # Loss on the ensemble average logits (not just models[0])
-            with torch.no_grad():
-                logits_sum = sum(m(volumes, clinical) for m in models)
-                ensemble_logits = logits_sum / len(models)
-            loss = crit(ensemble_logits, labels)
-            total_loss    += loss.item() * B
-            total_correct += (preds == labels).sum().item()
-            total_samples += B
-            # Accumulate confusion matrix
-            for t, p in zip(labels.cpu().numpy(), preds.cpu().numpy()):
-                conf_matrix[int(t), int(p)] += 1
+    # Per-class accuracy from the aggregated confusion matrix (every patient evaluated once)
+    overall_per_class = {}
+    for cls_idx in range(NUM_CLASSES):
+        cls_total = overall_conf_matrix[cls_idx].sum()
+        cls_correct = overall_conf_matrix[cls_idx, cls_idx]
+        overall_per_class[IDX_TO_LABEL[cls_idx]] = (
+            round(float(cls_correct) / float(cls_total), 4) if cls_total > 0 else 0.0
+        )
+    overall_acc = overall_conf_matrix.diagonal().sum() / overall_conf_matrix.sum()
 
-        # Per-class accuracy from confusion matrix diagonal
-        from prepare import IDX_TO_LABEL
-        per_class_acc = {}
-        for cls_idx in range(NUM_CLASSES):
-            cls_total = conf_matrix[cls_idx].sum()
-            cls_correct = conf_matrix[cls_idx, cls_idx]
-            per_class_acc[IDX_TO_LABEL[cls_idx]] = (
-                round(float(cls_correct) / float(cls_total), 4) if cls_total > 0 else 0.0
-            )
-
-        return {
-            "val_acc":       total_correct / max(total_samples, 1),
-            "val_loss":      total_loss    / max(total_samples, 1),
-            "per_class_acc": per_class_acc,
-            "conf_matrix":   conf_matrix,
-        }
-
-    metrics = ensemble_evaluate(ensemble_models, val_loader)
-    log.info(
-        "RESULTS → val_acc=%.4f  val_loss=%.4f",
-        metrics["val_acc"], metrics["val_loss"],
-    )
-    log.info("Per-class accuracy: %s", metrics["per_class_acc"])
+    log.info("=" * 60)
+    log.info("5-FOLD CV RESULTS:")
+    log.info("  Per-fold val_acc: %s", [round(a, 4) for a in fold_accs])
+    log.info("  Mean val_acc: %.4f ± %.4f", mean_acc, std_acc)
+    log.info("  Overall acc (all 100 patients): %.4f", overall_acc)
+    log.info("  Per-class accuracy: %s", overall_per_class)
+    log.info("  Total wall time: %.1fs", total_time)
 
     # Save confusion matrix as PNG
     try:
         import matplotlib
         matplotlib.use("Agg")
         import matplotlib.pyplot as plt
-        from prepare import IDX_TO_LABEL as _IDX_TO_LABEL
-        conf = metrics["conf_matrix"]
+        conf = overall_conf_matrix
         fig, ax = plt.subplots(figsize=(6, 5))
         im = ax.imshow(conf, interpolation="nearest", cmap="Blues")
         plt.colorbar(im, ax=ax)
-        class_names = [_IDX_TO_LABEL[i] for i in range(NUM_CLASSES)]
+        class_names = [IDX_TO_LABEL[i] for i in range(NUM_CLASSES)]
         ax.set_xticks(range(NUM_CLASSES)); ax.set_xticklabels(class_names)
         ax.set_yticks(range(NUM_CLASSES)); ax.set_yticklabels(class_names)
         ax.set_xlabel("Predicted"); ax.set_ylabel("True")
-        ax.set_title(f"Confusion Matrix — {experiment_id}\n(mri+clinical, val set)")
+        ax.set_title(f"Confusion Matrix — {experiment_id}\n(5-fold CV, all 100 patients)")
         for i in range(NUM_CLASSES):
             for j in range(NUM_CLASSES):
                 ax.text(j, i, str(conf[i, j]), ha="center", va="center",
@@ -573,40 +649,19 @@ def main():
         log.warning("Could not save confusion matrix: %s", exc)
 
     # ------------------------------------------------------------------
-    # Optional evaluation on held-out test set (ACDC_testing)
-    # ------------------------------------------------------------------
-    test_metrics: dict = {}
-    try:
-        test_loader = get_dataloader(
-            "test", batch_size=BATCH_SIZE, shuffle=False, num_workers=NUM_WORKERS
-        )
-        log.info("Running ensemble test evaluation (%d samples) …", len(test_loader.dataset))
-        _test = ensemble_evaluate(ensemble_models, test_loader)
-        log.info(
-            "TEST → test_acc=%.4f  test_loss=%.4f",
-            _test["val_acc"], _test["val_loss"],
-        )
-        test_metrics = {
-            "test_acc":  round(_test["val_acc"],  6),
-            "test_loss": round(_test["val_loss"], 6),
-        }
-        log.info("Test per-class accuracy: %s", _test["per_class_acc"])
-    except RuntimeError:
-        log.info("No test split found — skipping test evaluation.")
-
-    # ------------------------------------------------------------------
     # Append to outputs/results.jsonl
     # ------------------------------------------------------------------
     record = {
         "timestamp":     datetime.now(timezone.utc).isoformat(),
         "experiment_id": experiment_id,
-        "seed":          seed,
         "modality":      "mri+clinical",
-        "val_acc":       round(metrics["val_acc"],  6),
-        "val_loss":      round(metrics["val_loss"], 6),
-        "per_class_acc": metrics["per_class_acc"],
-        **test_metrics,
-        "epochs_run":    epoch,
+        "cv_folds":      N_FOLDS,
+        "val_acc":       round(mean_acc, 6),
+        "val_acc_std":   round(std_acc, 6),
+        "val_loss":      round(mean_loss, 6),
+        "overall_acc":   round(float(overall_acc), 6),
+        "per_class_acc": overall_per_class,
+        "per_fold_acc":  [round(a, 4) for a in fold_accs],
         "wall_time_s":   round(total_time, 1),
         "config": {
             "lr":           LR,
@@ -614,6 +669,8 @@ def main():
             "dropout":      DROPOUT,
             "weight_decay": WEIGHT_DECAY,
             "use_amp":      USE_AMP,
+            "max_epochs":   MAX_EPOCHS,
+            "budget_per_fold_s": BUDGET_SECONDS,
             "arch_notes":   ARCH_NOTES,
         },
     }
@@ -624,22 +681,15 @@ def main():
     log.info("Result appended to %s", RESULTS_FILE)
     log.info("=== Experiment %s complete ===", experiment_id)
 
-    # Print a clean summary line for easy parsing
-    test_line = ""
-    if test_metrics:
-        test_line = (
-            f"  test_acc      : {test_metrics['test_acc']:.4f}\n"
-            f"  test_loss     : {test_metrics['test_loss']:.4f}\n"
-        )
+    # Print a clean summary
     print(
         f"\n{'='*60}\n"
         f"  experiment_id : {experiment_id}\n"
-        f"  seed          : {seed}\n"
-        f"  val_acc       : {metrics['val_acc']:.4f}\n"
-        f"  val_loss      : {metrics['val_loss']:.4f}\n"
-        f"{test_line}"
-        f"  epochs_run    : {epoch}\n"
-        f"  wall_time_s   : {total_time:.1f}\n"
+        f"  cv_folds      : {N_FOLDS}\n"
+        f"  val_acc (mean) : {mean_acc:.4f} ± {std_acc:.4f}\n"
+        f"  overall_acc    : {overall_acc:.4f}\n"
+        f"  per_class_acc  : {overall_per_class}\n"
+        f"  wall_time_s    : {total_time:.1f}\n"
         f"{'='*60}\n"
     )
 

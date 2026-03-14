@@ -4,24 +4,24 @@ Autonomous ML experiment framework for **cardiac MRI classification** on the
 [ACDC dataset](https://www.creatis.insa-lyon.fr/Challenge/acdc/).
 
 Inspired by [karpathy/autoresearch](https://github.com/karpathy/autoresearch):
-an AI agent autonomously iterates on `train.py`, runs fixed-budget (3-min)
+an AI agent autonomously iterates on `train.py`, runs fixed-budget (3-min per fold)
 experiments, checks `val_acc`, and repeats — logging every hypothesis and
 result to `outputs/`.
 
 ```
 blackbox-mm-prototype/
 ├── src/
-│   ├── prepare.py      ← FIXED  — data pipeline, clinical features, eval()
+│   ├── prepare.py      ← FIXED  — data pipeline, clinical features
 │   └── train.py        ← AGENT ITERATES ON THIS
 ├── data/
 │   ├── raw/            ← downloaded ACDC zip + extracted folders
-│   └── processed/      ← .pt tensors (train / val / test)
+│   └── processed/      ← .pt tensors per patient
 ├── outputs/
-│   ├── results.jsonl              ← one JSON line per experiment
+│   ├── results.jsonl              ← one JSON line per experiment (this run)
 │   ├── confusion_matrices/        ← per-run confusion matrix PNGs
-│   │   └── confusion_matrix_<id>.png
 │   └── research_log.md            ← agent's running hypothesis log
 ├── program.md          ← instructions for the AI agent
+├── run.log             ← training output from last run (gitignored)
 ├── pyproject.toml
 └── requirements.txt
 ```
@@ -57,11 +57,8 @@ Clinical input shape: `(5,)` — `[Height, Weight, EDV, ESV, EF]`.
 ### Install dependencies
 
 ```bash
-# From repo root
 uv sync
 ```
-
-This creates a `.venv/` and installs all dependencies from `pyproject.toml`.
 
 ---
 
@@ -73,15 +70,11 @@ uv run src/prepare.py
 
 What this does:
 1. Downloads the raw ACDC training set (~1.5 GB) from the Creatis server.
-2. Parses each patient's `Info.cfg` to extract the pathology label, Height, and Weight.
+2. Parses each patient's `Info.cfg` for pathology label, Height, Weight.
 3. Loads the end-diastolic NIfTI frame with `nibabel`.
 4. Resizes to `(1, 16, 128, 128)` and normalises to `[0, 1]`.
-5. Computes **EDV, ESV, EF** from the `_gt.nii.gz` segmentation masks (LV cavity = label 3):
-   - `EDV` = LV voxel count at ED frame × voxel volume (mm³→mL)
-   - `ESV` = LV voxel count at ES frame × voxel volume (mm³→mL)
-   - `EF`  = `(EDV − ESV) / EDV`, clamped to `[0, 1]`
-6. Splits patients **60/20/20** (stratified by class) into train/val/test.
-7. Saves `.pt` tensors to `data/processed/{train,val,test}/`.
+5. Computes **EDV, ESV, EF** from segmentation masks (LV cavity = label 3).
+6. Saves one `.pt` file per patient to `data/processed/`.
 
 Each `.pt` file contains:
 ```python
@@ -92,12 +85,10 @@ Each `.pt` file contains:
 }
 ```
 
-> **Manual download fallback:** If the automatic download fails (the ACDC
-> server occasionally requires registration), download `ACDC_training.zip`
-> from https://humanheart-project.creatis.insa-lyon.fr/database/ and place
-> it at `data/raw/ACDC_training.zip`, then re-run `prepare.py`.
+> **Manual download fallback:** If the automatic download fails, download
+> `ACDC_training.zip` from https://humanheart-project.creatis.insa-lyon.fr/database/
+> and place it at `data/raw/ACDC_training.zip`, then re-run `prepare.py`.
 
-Options:
 ```bash
 uv run src/prepare.py --skip-download   # if data/raw/ACDC_training/ already exists
 uv run src/prepare.py --force-download  # re-download even if zip exists
@@ -105,95 +96,43 @@ uv run src/prepare.py --force-download  # re-download even if zip exists
 
 ---
 
-## Step 2 — Run an experiment
+## Step 2 — Run a single experiment (manual)
 
 ```bash
 uv run src/train.py
 ```
 
-- Trains for exactly **3 minutes** wall-clock time per seed (`BUDGET_SECONDS = 180`).
-- Prints a summary at the end: (averaging)
-  ```
-  ============================================================
-    experiment_id : dbdb0fe5
-    val_acc       : 0.7000
-    val_loss      : 1.0570
-    test_acc      : 0.5500
-    test_loss     : 1.2254
-    epochs_run    : 240
-    wall_time_s   : 53.5
-  ============================================================
-  seeds:     [42, 7, 13]
-     val_acc:   mean=0.7333  std=0.0577
-     test_acc:  mean=0.6167  std=0.0289
-       seed=42  val=0.7000  test=0.6000  pca={'NOR': 0.75, 'DCM': 1.0, 'HCM': 0.75, 'MINF': 0.5,
-     'RV': 0.5}
-       seed=7  val=0.8000  test=0.6000  pca={'NOR': 1.0, 'DCM': 1.0, 'HCM': 1.0, 'MINF': 0.5,
-     'RV': 0.5}
-       seed=13  val=0.7000  test=0.6500  pca={'NOR': 1.0, 'DCM': 1.0, 'HCM': 0.75, 'MINF': 0.5,
-     'RV': 0.25}
-  ```
-- Appends one JSON line to `outputs/results.jsonl` (includes `modality`,
-  `per_class_acc`, and all config fields).
+- Runs **5-fold stratified cross-validation** on all 100 patients (80 train / 20 val per fold).
+- Each fold trains for up to `MAX_EPOCHS` within a **3-minute wall-clock budget**.
+- Total wall time: ~15 minutes (5 folds × 3 minutes).
+- Appends one JSON line to `outputs/results.jsonl`.
 - Saves a confusion matrix PNG to `outputs/confusion_matrices/`.
+- All training output is written to `run.log` (overwritten each run).
 
----
-
-## Step 3 — Launch the autonomous agent
-
-Point the Blackbox CLI at `program.md` to start the autonomous research loop:
-
-```bash
-blackbox program.md
+Example summary output:
 ```
-
-The agent will:
-1. Read `outputs/results.jsonl` to understand prior experiments.
-2. Form a hypothesis (e.g. "clinical EF feature will break HCM/MINF confusion").
-3. Edit `src/train.py` with exactly one change.
-4. Run `uv run src/train.py` (1-min budget).
-5. Log the result + interpretation to `outputs/research_log.md`.
-6. Repeat until `val_acc ≥ 0.90` or 20 experiments are done.
-
----
-
-## Viewing results
-
-```bash
-# Pretty-print all experiment results (with modality and per-class accuracy)
-cat outputs/results.jsonl | python -c "
-import sys, json
-for line in sys.stdin:
-    r = json.loads(line)
-    pca = r.get('per_class_acc', {})
-    mod = r.get('modality', 'mri')
-    print(f\"{r['experiment_id']}  [{mod}]  val_acc={r['val_acc']:.4f}  \", end='')
-    if pca:
-        print('  '.join(f\"{k}={v:.2f}\" for k, v in pca.items()))
-    else:
-        print(r['config']['arch_notes'][:60])
-"
-
-# View the agent's research log
-cat outputs/research_log.md
+============================================================
+  experiment_id : e64fb90fe628
+  cv_folds      : 5
+  val_acc (mean) : 0.6300 ± 0.1166
+  overall_acc    : 0.6300
+  per_class_acc  : {'NOR': 0.55, 'DCM': 0.70, 'HCM': 0.65, 'MINF': 0.45, 'RV': 0.80}
+  wall_time_s    : 166.4
+============================================================
 ```
 
 ---
 
-## Data splits
+## Evaluation setup: 5-fold cross-validation
 
-All splits are drawn from the 100 labelled patients in `ACDC_training`
-(20 per class), stratified by pathology class:
+All 100 patients are split into 5 stratified folds of 20 (4 per class per fold).
+Each fold trains on the remaining 80 patients and evaluates on its 20.
+Every patient is evaluated exactly once. The primary metric is **mean val_acc
+across all 5 folds**.
 
-| Split | Patients | Per class |
-|-------|----------|-----------|
-| train | 60       | 12        |
-| val   | 20       | 4         |
-| test  | 20       | 4         |
-
-The test split is **locked** — `train.py` never trains on it; it is only
-evaluated at the end of each run. Split membership is recorded in
-`data/processed/splits.json`.
+There is no separate held-out test set — with 100 patients, 5-fold CV is the
+standard evaluation protocol. Since no early stopping is used (the budget just
+runs to completion), there is no val leakage.
 
 ---
 
@@ -204,28 +143,21 @@ Each line is a JSON object:
 | Field | Type | Description |
 |-------|------|-------------|
 | `timestamp` | str | UTC ISO-8601 |
-| `experiment_id` | str | 8-char hex |
-| `modality` | str | `"mri+clinical"` for new runs; absent for old MRI-only runs |
-| `val_acc` | float | Validation accuracy (primary metric) |
-| `val_loss` | float | Validation cross-entropy loss |
-| `per_class_acc` | dict | `{"NOR": f, "DCM": f, "HCM": f, "MINF": f, "RV": f}` — new runs only |
-| `test_acc` | float | Held-out test accuracy |
-| `test_loss` | float | Held-out test loss |
-| `epochs_run` | int | Total epochs across all ensemble members |
+| `experiment_id` | str | Git commit hash (12-char) |
+| `modality` | str | `"mri+clinical"` |
+| `cv_folds` | int | Always 5 |
+| `val_acc` | float | Mean val accuracy across 5 folds |
+| `val_acc_std` | float | Std of val accuracy across 5 folds |
+| `val_loss` | float | Mean val loss across 5 folds |
+| `overall_acc` | float | Accuracy over all 100 patients combined |
+| `per_class_acc` | dict | `{"NOR": f, "DCM": f, "HCM": f, "MINF": f, "RV": f}` |
+| `per_fold_acc` | list | `[fold1_acc, fold2_acc, ..., fold5_acc]` |
 | `wall_time_s` | float | Total wall-clock seconds |
-| `config` | dict | `lr`, `batch_size`, `dropout`, `weight_decay`, `use_amp`, `arch_notes` |
-
-> Old MRI-only entries (before the multimodal upgrade) are preserved exactly
-> as written — no backfill. The `modality` and `per_class_acc` fields are
-> absent on those lines.
+| `config` | dict | `lr`, `batch_size`, `dropout`, `weight_decay`, `use_amp`, `max_epochs`, `arch_notes` |
 
 ---
 
 ## Hyperparameters (top of `train.py`)
-
-The agent freely modifies these between experiments. Architecture-coupled
-values (`MAX_EPOCHS`, `N_ENSEMBLE`, etc.) are omitted here because they
-change with the model.
 
 | Constant | Default | Description |
 |----------|---------|-------------|
@@ -233,6 +165,7 @@ change with the model.
 | `BATCH_SIZE` | `8` | Samples per GPU step |
 | `DROPOUT` | `0.5` | Dropout before classifier |
 | `WEIGHT_DECAY` | `0.1` | AdamW weight decay |
+| `MAX_EPOCHS` | `120` | Epochs per fold (tunable) |
 | `USE_AMP` | `True` | Mixed precision (fp16) |
 | `BUDGET_SECONDS` | `180` | **Fixed — do not change** |
 
@@ -241,11 +174,33 @@ change with the model.
 ## GPU
 
 Tested on **NVIDIA H100 80 GB**.  
-The code uses `device = torch.device("cuda")` automatically when a GPU is
-available, falling back to CPU for debugging.
+Uses `torch.device("cuda")` automatically, falling back to CPU.
 
 ---
 
 ## License
 
 MIT
+
+---
+
+## Starting an autonomous research run
+
+Each research run lives on its own git branch (`autoresearch/<tag>`).
+The experiment loop is defined in `program.md`.
+
+**To start a run, open the Blackbox CLI in this repo and send this prompt:**
+
+```
+Read program.md and execute the instructions step by step, starting with the SETUP section.
+```
+
+The agent will:
+1. Read `README.md`, `src/prepare.py`, and `src/train.py` to understand the codebase
+2. Ask you for a run tag (e.g. `baseline-cv`, `augmentation-sweep`)
+3. Create branch `autoresearch/<tag>`, clear `results.jsonl`
+4. Autonomously iterate: form hypothesis → commit `train.py` → run experiment → log results → repeat
+5. Stop when `val_acc ≥ 0.85` or after 20 experiments
+
+Results accumulate in `outputs/results.jsonl` and `outputs/research_log.md` on the branch.
+Each experiment is a git commit — `git log --oneline` gives the full history.

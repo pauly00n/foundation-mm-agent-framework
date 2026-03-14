@@ -1,4 +1,5 @@
-outputs/\ndata/real/\n.ipynb_checkpoints/
+.ipynb_checkpoints/
 .venv/
-outputs/confusion*
 data/*
+outputs/confusion*
+run.log

@@ -268,7 +268,6 @@ After every experiment, append the following block to `outputs/research_log.md`:
 **Experiment ID (commit hash):** <experiment_id>
 
 **Hypothesis:** <one sentence: what you expected and why>
-```
 
 **Change made:**
 diff

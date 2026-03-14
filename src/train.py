@@ -56,10 +56,10 @@ ARCH_NOTES = (
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
     "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (5 features). MAX_EPOCHS=60 to reduce overfitting."
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=200 for longer cosine schedule."
 )
 
-MAX_EPOCHS = 60
+MAX_EPOCHS = 200
 MIXUP_ALPHA = 0.0  # Mixup disabled
 
 # Training budget (seconds) per fold — do NOT change this

@@ -200,3 +200,32 @@
 **Interpretation:** Much worse (0.63 vs 0.70). LR=1e-3 is too high — fold 3 collapsed to 0.45 again, high variance returned. The cosine schedule with LR=1e-3 overshoots. LR=5e-4 is the right learning rate. Reverting LR and trying a wider MRI encoder (1→32→64→128→256) to increase model capacity.
 
 **Next hypothesis:** Revert LR to 5e-4, revert to 5 clinical features (no derived), MAX_EPOCHS=60, and widen the MRI encoder channels (1→32→64→128→256) to increase capacity.
+
+---
+## Experiment 9 — 2026-03-15T00:10:57Z
+**Experiment ID (commit hash):** b894aa023e4c
+
+**Hypothesis:** Wider MRI encoder (1→32→64→128→256) will increase model capacity and improve accuracy.
+
+**Change made:**
+```diff
+- stage1: ConvBlock3D(1, 16) → stage4: ConvBlock3D(64, 128)
++ stage1: ConvBlock3D(1, 32) → stage4: ConvBlock3D(128, 256)
+- ClinicalEncoder: Linear(5→64→128)
++ ClinicalEncoder: Linear(5→64→256)
+- gate: Linear(128,128), classifier: Linear(256,5)
++ gate: Linear(256,256), classifier: Linear(512,5)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6900 |
+| val_acc (std)  | 0.0663 |
+| per_fold_acc   | [0.80, 0.70, 0.65, 0.60, 0.70] |
+| per_class_acc  | NOR=0.70  DCM=0.80  HCM=0.65  MINF=0.60  RV=0.70 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Best variance so far (std=0.0663)! Fold 3 improved to 0.65 (was 0.60). DCM improved to 0.80. But mean still 0.69 vs E2's 0.70. The wider model is more stable. MINF dropped to 0.60. Combining wider model with derived features (BMI+SV) may push both HCM and stability higher.
+
+**Next hypothesis:** Keep wider encoder (256), add derived features BMI+SV (7 features), MAX_EPOCHS=60, LR=5e-4.

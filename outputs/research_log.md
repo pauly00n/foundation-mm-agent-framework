@@ -229,3 +229,27 @@
 **Interpretation:** Best variance so far (std=0.0663)! Fold 3 improved to 0.65 (was 0.60). DCM improved to 0.80. But mean still 0.69 vs E2's 0.70. The wider model is more stable. MINF dropped to 0.60. Combining wider model with derived features (BMI+SV) may push both HCM and stability higher.
 
 **Next hypothesis:** Keep wider encoder (256), add derived features BMI+SV (7 features), MAX_EPOCHS=60, LR=5e-4.
+
+---
+## Experiment 10 — 2026-03-15T00:14:07Z
+**Experiment ID (commit hash):** 68620fdd2c15
+
+**Hypothesis:** Combining wider encoder (256) with derived features (BMI+SV) will give best of both worlds.
+
+**Change made:**
+```diff
+  (wider encoder from E9 + derived features from E7)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6500 |
+| val_acc (std)  | 0.0894 |
+| per_fold_acc   | [0.80, 0.70, 0.60, 0.55, 0.60] |
+| per_class_acc  | NOR=0.60  DCM=0.70  HCM=0.55  MINF=0.55  RV=0.85 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Worse than E9 (0.65 vs 0.69). The combination of wider encoder + derived features doesn't work — the larger model overfits more with extra features. Three consecutive experiments (E8, E9, E10) haven't beaten E2. Trying a fundamentally different direction: OneCycleLR scheduler with the original architecture (E2 config).
+
+**Next hypothesis:** Revert to original architecture (1→16→32→64→128, 5 features), MAX_EPOCHS=60, and replace CosineAnnealingLR with OneCycleLR (max_lr=5e-4) for better convergence on small datasets.

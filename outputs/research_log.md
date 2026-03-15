@@ -403,3 +403,28 @@
 **Interpretation:** Close to E2 (0.69 vs 0.70) but with higher variance (std=0.1241). Fold 5 jumped to 0.80 but fold 4 dropped to 0.50. The log-transform helps some folds but hurts others. DCM improved to 0.80. Trying to combine log-transform with derived features (BMI+SV) from E7 to get the best of both.
 
 **Next hypothesis:** Combine log-transform of EDV/ESV with derived features BMI+SV (7 features total), keep MAX_EPOCHS=60, BS=8, original arch.
+
+---
+## Experiment 17 — 2026-03-15T00:44:59Z
+**Experiment ID (commit hash):** 5d0acf8b9edb
+
+**Hypothesis:** Combining log-transform of EDV/ESV with derived features BMI+SV will give the best clinical feature representation.
+
+**Change made:**
+```diff
+  augment_clinical: log1p(EDV), log1p(ESV), + BMI, + SV → 7 features
+  ClinicalEncoder: Linear(5→64) → Linear(7→64)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.7200 |
+| val_acc (std)  | 0.0812 |
+| per_fold_acc   | [0.80, 0.80, 0.75, 0.65, 0.60] |
+| per_class_acc  | NOR=0.75  DCM=0.80  HCM=0.65  MINF=0.60  RV=0.80 |
+| prev best      | 0.7000 |
+
+**Interpretation:** NEW BEST! +0.02 over E2 (0.72 vs 0.70). Folds 1, 2, 3 all at 0.75-0.80. NOR jumped to 0.75, DCM to 0.80. Variance also reduced (0.0812 vs 0.0949). The combination of log-transform + derived features is synergistic. MINF is still the weakest at 0.60. Fold 5 dropped to 0.60 — trying MAX_EPOCHS=80 to see if more training helps.
+
+**Next hypothesis:** Keep log-transform + derived features (7), increase MAX_EPOCHS from 60 to 80 to allow more convergence.

@@ -56,11 +56,11 @@ ARCH_NOTES = (
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
     "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (5 features). MAX_EPOCHS=60. Plain CE. H+V flips. LR=5e-4. Original arch. CosineAnnealingLR. Mixup alpha=0.4."
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=60. Plain CE. H+V flips. LR=5e-4. Original arch. CosineAnnealingLR. FiLM fusion: clinical→gamma+beta modulate MRI embedding."
 )
 
 MAX_EPOCHS = 60
-MIXUP_ALPHA = 0.4  # Mixup enabled
+MIXUP_ALPHA = 0.0  # Mixup disabled
 
 # Training budget (seconds) per fold — do NOT change this
 BUDGET_SECONDS = 180  # 3 minutes per fold
@@ -283,18 +283,21 @@ class ClinicalEncoder(nn.Module):
 
 class MultiModalCardiacNet(nn.Module):
     """
-    Gated fusion: clinical gate weights MRI embedding element-wise.
-    Concat(gated_mri, clinical_feat) → Linear(256, NUM_CLASSES).
+    FiLM fusion: clinical features generate gamma+beta to modulate MRI embedding.
+    FiLM(mri_feat) = gamma * mri_feat + beta, then concat with clinical_feat → classifier.
     """
 
     def __init__(self, num_classes: int = NUM_CLASSES, dropout: float = DROPOUT):
         super().__init__()
         self.mri_encoder      = CardiacCNN3D(num_classes=num_classes, dropout=dropout)
         self.clinical_encoder = ClinicalEncoder()
-        self.gate             = nn.Linear(128, 128)
-        self.classifier       = nn.Linear(128 + 128, num_classes)
-        nn.init.xavier_uniform_(self.gate.weight);       nn.init.zeros_(self.gate.bias)
-        nn.init.xavier_uniform_(self.classifier.weight); nn.init.zeros_(self.classifier.bias)
+        # FiLM: predict gamma and beta from clinical features
+        self.film_gamma = nn.Linear(128, 128)
+        self.film_beta  = nn.Linear(128, 128)
+        self.classifier = nn.Linear(128 + 128, num_classes)
+        for layer in [self.film_gamma, self.film_beta, self.classifier]:
+            nn.init.xavier_uniform_(layer.weight)
+            nn.init.zeros_(layer.bias)
 
     def _mri_embed(self, x: torch.Tensor) -> torch.Tensor:
         x = self.mri_encoder.stage1(x)
@@ -305,10 +308,12 @@ class MultiModalCardiacNet(nn.Module):
         return self.mri_encoder.dropout(x)
 
     def forward(self, volumes: torch.Tensor, clinical: torch.Tensor) -> torch.Tensor:
-        mri_feat      = self._mri_embed(volumes)
-        clinical_feat = self.clinical_encoder(clinical)
-        gate          = torch.sigmoid(self.gate(clinical_feat))
-        fused         = torch.cat([mri_feat * gate, clinical_feat], dim=1)
+        mri_feat      = self._mri_embed(volumes)          # (B, 128)
+        clinical_feat = self.clinical_encoder(clinical)   # (B, 128)
+        gamma = self.film_gamma(clinical_feat)             # (B, 128)
+        beta  = self.film_beta(clinical_feat)              # (B, 128)
+        modulated = gamma * mri_feat + beta                # FiLM modulation
+        fused = torch.cat([modulated, clinical_feat], dim=1)  # (B, 256)
         return self.classifier(fused)
 
 

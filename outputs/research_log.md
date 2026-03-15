@@ -149,3 +149,29 @@
 **Interpretation:** Worse than E2 (0.66 vs 0.70). Heavy augmentation hurt badly — HCM collapsed to 0.25 and RV to 0.50. The intensity jitter + noise is too aggressive for only 60 epochs; the model can't converge properly. Fold 2 dropped to 0.50. Reverting to H+V flips only and trying a fundamentally different direction: enriching the clinical feature set with derived features (BMI, stroke volume).
 
 **Next hypothesis:** Revert augmentation to H+V flips only, keep MAX_EPOCHS=60, and add derived clinical features BMI=Weight/Height² and SV=EDV-ESV to the ClinicalEncoder input (7 features instead of 5).
+
+---
+## Experiment 7 — 2026-03-15T00:04:14Z
+**Experiment ID (commit hash):** cd4b2209b76c
+
+**Hypothesis:** Adding derived clinical features BMI and SV will give the model more discriminative power.
+
+**Change made:**
+```diff
+- nn.Linear(5, 64)  # ClinicalEncoder input
++ nn.Linear(7, 64)  # ClinicalEncoder input
++ augment_clinical(): adds BMI=W/H^2, SV=EDV-ESV
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6900 |
+| val_acc (std)  | 0.0860 |
+| per_fold_acc   | [0.80, 0.75, 0.55, 0.70, 0.65] |
+| per_class_acc  | NOR=0.60  DCM=0.75  HCM=0.70  MINF=0.60  RV=0.80 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Close to E2 (0.69 vs 0.70) but with lower variance (0.0860 vs 0.0949). HCM improved significantly (0.55→0.70). Fold 2 improved (0.70→0.75). However MINF dropped (0.70→0.60) and fold 3 still weak at 0.55. The derived features help HCM but hurt MINF. Combining derived features with a higher LR may help convergence.
+
+**Next hypothesis:** Keep derived features (7), MAX_EPOCHS=60, and increase LR from 5e-4 to 1e-3 to see if faster convergence improves results.

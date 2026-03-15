@@ -45,7 +45,7 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
 # ===========================================================================
 
-LR           = 1e-3        # AdamW LR — trying higher LR with derived features
+LR           = 5e-4        # AdamW LR (best known)
 BATCH_SIZE   = 8           # samples per GPU step
 DROPOUT      = 0.5         # dropout probability
 WEIGHT_DECAY = 1e-1        # WD=0.1
@@ -56,7 +56,7 @@ ARCH_NOTES = (
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
     "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (7 features). MAX_EPOCHS=60. Plain CE. H+V flips. Derived features: BMI+SV. LR=1e-3."
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=60. Plain CE. H+V flips. LR=5e-4. Wider MRI encoder: 1→32→64→128→256. ClinicalEncoder→256. Fusion: concat(256+256)→Linear(512,5)."
 )
 
 MAX_EPOCHS = 60
@@ -227,10 +227,10 @@ class CardiacCNN3D(nn.Module):
 
     def __init__(self, num_classes: int = NUM_CLASSES, dropout: float = DROPOUT):
         super().__init__()
-        self.stage1 = nn.Sequential(ConvBlock3D(1,   16,  pool=True),  ResBlock3D(16))
-        self.stage2 = nn.Sequential(ConvBlock3D(16,  32,  pool=True),  ResBlock3D(32))
-        self.stage3 = nn.Sequential(ConvBlock3D(32,  64,  pool=True),  ResBlock3D(64))
-        self.stage4 = nn.Sequential(ConvBlock3D(64,  128, pool=True),  ResBlock3D(128))
+        self.stage1 = nn.Sequential(ConvBlock3D(1,   32,  pool=True),  ResBlock3D(32))
+        self.stage2 = nn.Sequential(ConvBlock3D(32,  64,  pool=True),  ResBlock3D(64))
+        self.stage3 = nn.Sequential(ConvBlock3D(64,  128, pool=True),  ResBlock3D(128))
+        self.stage4 = nn.Sequential(ConvBlock3D(128, 256, pool=True),  ResBlock3D(256))
 
         self.gap     = nn.AdaptiveAvgPool3d(1)
         self.dropout = nn.Dropout(p=dropout)
@@ -258,18 +258,18 @@ class CardiacCNN3D(nn.Module):
 class ClinicalEncoder(nn.Module):
     """
     MLP encoder for tabular clinical features.
-    Input:  (B, 7)  — [Height, Weight, EDV, ESV, EF, BMI, SV]
-    Output: (B, 128)
+    Input:  (B, 5)  — [Height, Weight, EDV, ESV, EF]
+    Output: (B, 256)
     """
 
     def __init__(self):
         super().__init__()
         self.net = nn.Sequential(
-            nn.Linear(7, 64),
+            nn.Linear(5, 64),
             nn.BatchNorm1d(64),
             nn.ReLU(inplace=True),
-            nn.Linear(64, 128),
-            nn.BatchNorm1d(128),
+            nn.Linear(64, 256),
+            nn.BatchNorm1d(256),
             nn.ReLU(inplace=True),
         )
         for m in self.modules():
@@ -278,7 +278,7 @@ class ClinicalEncoder(nn.Module):
                 nn.init.zeros_(m.bias)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        return self.net(x)  # (B, 128)
+        return self.net(x)  # (B, 256)
 
 
 class MultiModalCardiacNet(nn.Module):
@@ -291,8 +291,8 @@ class MultiModalCardiacNet(nn.Module):
         super().__init__()
         self.mri_encoder      = CardiacCNN3D(num_classes=num_classes, dropout=dropout)
         self.clinical_encoder = ClinicalEncoder()
-        self.gate             = nn.Linear(128, 128)
-        self.classifier       = nn.Linear(128 + 128, num_classes)
+        self.gate             = nn.Linear(256, 256)
+        self.classifier       = nn.Linear(256 + 256, num_classes)
         nn.init.xavier_uniform_(self.gate.weight);       nn.init.zeros_(self.gate.bias)
         nn.init.xavier_uniform_(self.classifier.weight); nn.init.zeros_(self.classifier.bias)
 
@@ -374,8 +374,7 @@ def train_one_epoch(
         clinical = clinical.to(DEVICE, non_blocking=True)
         labels   = labels.to(DEVICE, non_blocking=True)
 
-        # Add derived clinical features then z-score normalize
-        clinical = augment_clinical(clinical)
+        # Z-score normalize clinical features
         clinical = normalize_clinical(clinical)
 
         # Augmentation: H+V flips only
@@ -437,7 +436,6 @@ def evaluate_with_tta(model, loader):
         volumes  = volumes.to(DEVICE, non_blocking=True)
         clinical = clinical.to(DEVICE, non_blocking=True)
         labels   = labels.to(DEVICE, non_blocking=True)
-        clinical = augment_clinical(clinical)
         clinical = normalize_clinical(clinical)
         B = volumes.size(0)
         probs_sum = torch.zeros(B, NUM_CLASSES, device=DEVICE)
@@ -551,7 +549,7 @@ def main():
         # Compute clinical normalization stats from this fold's training set
         all_clinical = []
         for _, clinical, _ in train_loader:
-            all_clinical.append(augment_clinical(clinical))
+            all_clinical.append(clinical)
         all_clinical = torch.cat(all_clinical, dim=0)
         _CLINICAL_MEAN = all_clinical.mean(dim=0).to(DEVICE)
         _CLINICAL_STD  = all_clinical.std(dim=0).to(DEVICE)

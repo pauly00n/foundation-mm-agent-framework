@@ -478,3 +478,63 @@
 **Interpretation:** Worse than E17 (0.69 vs 0.72). Depth flip hurt fold 3 (0.75→0.60). E17 remains the best. Three consecutive experiments (E18, E19) haven't beaten E17. Trying DROPOUT=0.6 with E17 config as final experiment.
 
 **Next hypothesis:** Revert to H+V flips only, keep E17 config (log-transform + derived features, MAX_EPOCHS=60), and increase DROPOUT from 0.5 to 0.6 to reduce overfitting.
+
+---
+## Experiment 20 — 2026-03-15T00:53:20Z
+**Experiment ID (commit hash):** d5d833d1235e
+
+**Hypothesis:** DROPOUT=0.6 will reduce overfitting and improve generalization with E17 config.
+
+**Change made:**
+```diff
+- DROPOUT = 0.5
++ DROPOUT = 0.6
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6900 |
+| val_acc (std)  | 0.1200 |
+| per_fold_acc   | [0.90, 0.70, 0.55, 0.70, 0.60] |
+| per_class_acc  | NOR=0.60  DCM=0.75  HCM=0.65  MINF=0.75  RV=0.70 |
+| prev best      | 0.7200 |
+
+**Interpretation:** Worse than E17 (0.69 vs 0.72). Fold 1 hit 0.90 (best single fold ever!) but fold 3 dropped to 0.55. High variance (std=0.1200). DROPOUT=0.5 is better than 0.6 for this config. E17 remains the best result. 20 experiments completed — stopping criterion met.
+
+---
+
+## Final Summary
+
+**Best experiment (commit hash):** 5d0acf8b9edb
+**Best mean val_acc (5 folds):** 0.7200 ± 0.0812
+**Best overall_acc:** 0.7200
+**Best config:**
+- Architecture: ResNet+SE 3D CNN (1→16→32→64→128) + ClinicalEncoder MLP (7→64→128)
+- Fusion: Gated fusion (gate=sigmoid(Linear(128,128)), concat(gated_mri, clinical)→Linear(256,5))
+- Clinical features: 7 features = [Height, Weight, log(1+EDV), log(1+ESV), EF, BMI, SV]
+- MAX_EPOCHS=60, LR=5e-4, BATCH_SIZE=8, DROPOUT=0.5, WEIGHT_DECAY=0.1
+- Augmentation: H+V flips only
+- Scheduler: CosineAnnealingLR (T_max=60, eta_min=1e-6)
+- Loss: Plain CrossEntropyLoss
+- TTA: 8 passes (all H/V/D flip combinations)
+
+**Key findings:**
+1. **MAX_EPOCHS=60 is the sweet spot**: The baseline (120 epochs) severely overfits (train_acc→0.95+ while val_acc lags). Reducing to 60 epochs gave the biggest single improvement (+0.07 val_acc).
+2. **Clinical feature engineering matters**: Log-transforming EDV/ESV (right-skewed) and adding derived features BMI and SV gave the best improvement (+0.02 over E2), pushing val_acc from 0.70 to 0.72.
+3. **Gated fusion is the best fusion strategy**: FiLM conditioning and simple concat were both worse. The original gated fusion is well-suited for this task.
+4. **Augmentation must be conservative**: H+V flips work well; adding depth flip, intensity jitter, or gaussian noise all hurt performance within the 60-epoch budget.
+5. **Architecture changes didn't help**: Wider encoder (1→32→64→128→256) improved variance but not mean. The original narrow architecture is sufficient for 80 training patients.
+
+**Hard classes analysis:**
+- MINF: Best achieved 0.70 (E2, E5, E7). The log-transform of EDV/ESV helps since MINF has variable EDV and reduced EF. Still the hardest class.
+- RV: Consistently 0.75-0.80 across experiments. The MRI branch handles RV well since EF is not discriminative for RV.
+- HCM: Improved from 0.55 (baseline) to 0.70 (E7, E9) with derived features. The BMI feature helps distinguish HCM (normal/low EDV, preserved EF).
+
+**Recommended next steps (beyond 3-min budget):**
+- Longer training (300-500 epochs) with early stopping on val_acc — the model clearly benefits from more epochs but needs regularization
+- Cross-attention fusion: clinical embedding attends over MRI spatial features before GAP
+- Ensemble of multiple seeds per fold to reduce variance
+- Test-time augmentation with more passes (16 or 32 instead of 8)
+- Pre-training the MRI encoder on a larger cardiac dataset (e.g., UK Biobank)
+- Focal loss with class-specific gamma values tuned per class

@@ -329,3 +329,27 @@
 **Interpretation:** Worse than E2 (0.66 vs 0.70). FiLM didn't help — the gated fusion in E2 is better. Fold 5 dropped to 0.55. The original gated fusion is the best fusion strategy found so far. Trying a deeper ClinicalEncoder with dropout to improve the clinical branch.
 
 **Next hypothesis:** Revert to gated fusion, keep MAX_EPOCHS=60, and deepen ClinicalEncoder to 5→64→128→128 with dropout=0.3 between layers.
+
+---
+## Experiment 14 — 2026-03-15T00:27:03Z
+**Experiment ID (commit hash):** 6bbcda51308d
+
+**Hypothesis:** Deeper ClinicalEncoder (5→64→128→128) with dropout=0.3 will improve the clinical branch.
+
+**Change made:**
+```diff
+  ClinicalEncoder: added extra Linear(128,128)+BN+ReLU layer and Dropout(0.3) between layers
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6600 |
+| val_acc (std)  | 0.0860 |
+| per_fold_acc   | [0.75, 0.70, 0.50, 0.70, 0.65] |
+| per_class_acc  | NOR=0.55  DCM=0.70  HCM=0.65  MINF=0.65  RV=0.75 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Worse than E2 (0.66 vs 0.70). The deeper ClinicalEncoder with dropout is slowing convergence — train_acc is lower (0.79 vs 0.86 in E2). The extra dropout in the clinical branch is too aggressive. The original 2-layer ClinicalEncoder is better. Trying BATCH_SIZE=16 to get more stable gradients.
+
+**Next hypothesis:** Revert ClinicalEncoder to original 2-layer, keep MAX_EPOCHS=60, and increase BATCH_SIZE from 8 to 16 for more stable gradient estimates.

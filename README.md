@@ -206,5 +206,3 @@ Uses `torch.device("cuda")` automatically, falling back to CPU.
 ## License
 
 MIT
-
----

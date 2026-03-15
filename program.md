@@ -52,11 +52,12 @@ If the branch already exists, tell the user and ask for a different tag.
 git checkout -b autoresearch/<tag>
 ```
 
-### Step 5 — Clear results.jsonl for this fresh run
+### Step 5 — Clear research_log.md and results.jsonl for this fresh run
 ```bash
 > outputs/results.jsonl
+> outputs/results_log.md
 ```
-This ensures `results.jsonl` only contains experiments from this run.
+This ensures that both `results_log.md` and `results.jsonl` only contain experiments from this run.
 (History from previous runs is preserved in their own branches.)
 
 ### Step 6 — Begin the experiment loop
@@ -88,7 +89,7 @@ LOOP:
 
 One experiment = ~15 minutes wall-clock (5 folds × 3 minutes each).
 
-Crashes: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, log "crash" as the status in the tsv, and move on.
+Crashes: If a run crashes (OOM, or a bug, or etc.), use your judgment: If it's something dumb and easy to fix (e.g. a typo, a missing import), fix it and re-run. If the idea itself is fundamentally broken, just skip it, and move on.
 
 NEVER STOP: Once the experiment loop has begun (after the initial setup), do NOT pause to ask the human if you should continue. Do NOT ask "should I keep going?" or "is this a good stopping point?". The human might be asleep, or gone from a computer and expects you to continue working indefinitely until you are manually stopped. You are autonomous. If you run out of ideas, think harder — read papers referenced in the code, re-read the in-scope files for new angles, try combining previous near-misses, try more radical architectural changes. The loop runs until the human interrupts you, period.
 

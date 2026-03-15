@@ -45,7 +45,7 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
 # ===========================================================================
 
-LR           = 5e-4        # AdamW LR (best known)
+LR           = 1e-3        # AdamW LR — trying higher LR with derived features
 BATCH_SIZE   = 8           # samples per GPU step
 DROPOUT      = 0.5         # dropout probability
 WEIGHT_DECAY = 1e-1        # WD=0.1
@@ -56,7 +56,7 @@ ARCH_NOTES = (
     "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
     "5-fold CV on 100 patients. CosineAnnealingLR T_max=MAX_EPOCHS. "
     "DROPOUT=0.5. WD=0.1. H+V flip. Standard CE. TTA=8 passes. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (7 features). MAX_EPOCHS=60. Plain CE. H+V flips. Derived features: BMI=W/H^2, SV=EDV-ESV."
+    "Clinical z-score normalization (7 features). MAX_EPOCHS=60. Plain CE. H+V flips. Derived features: BMI+SV. LR=1e-3."
 )
 
 MAX_EPOCHS = 60

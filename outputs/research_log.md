@@ -353,3 +353,28 @@
 **Interpretation:** Worse than E2 (0.66 vs 0.70). The deeper ClinicalEncoder with dropout is slowing convergence — train_acc is lower (0.79 vs 0.86 in E2). The extra dropout in the clinical branch is too aggressive. The original 2-layer ClinicalEncoder is better. Trying BATCH_SIZE=16 to get more stable gradients.
 
 **Next hypothesis:** Revert ClinicalEncoder to original 2-layer, keep MAX_EPOCHS=60, and increase BATCH_SIZE from 8 to 16 for more stable gradient estimates.
+
+---
+## Experiment 15 — 2026-03-15T00:31:02Z
+**Experiment ID (commit hash):** f1758c87599a
+
+**Hypothesis:** BATCH_SIZE=16 will give more stable gradient estimates and improve convergence.
+
+**Change made:**
+```diff
+- BATCH_SIZE = 8
++ BATCH_SIZE = 16
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6700 |
+| val_acc (std)  | 0.1030 |
+| per_fold_acc   | [0.85, 0.65, 0.60, 0.55, 0.70] |
+| per_class_acc  | NOR=0.55  DCM=0.80  HCM=0.60  MINF=0.75  RV=0.65 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Worse than E2 (0.67 vs 0.70). Larger batch causes more overfitting — train_acc reaches 0.975-0.9875 while val_acc drops. With only 80 training patients and batch=16, we get only ~5 batches per epoch, which is too few for good gradient estimates. BATCH_SIZE=8 is better. Trying log-transform of EDV/ESV clinical features.
+
+**Next hypothesis:** Revert BATCH_SIZE to 8, keep MAX_EPOCHS=60, and add log-transform of EDV and ESV features (right-skewed distributions) to improve clinical branch discrimination.

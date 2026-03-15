@@ -378,3 +378,28 @@
 **Interpretation:** Worse than E2 (0.67 vs 0.70). Larger batch causes more overfitting — train_acc reaches 0.975-0.9875 while val_acc drops. With only 80 training patients and batch=16, we get only ~5 batches per epoch, which is too few for good gradient estimates. BATCH_SIZE=8 is better. Trying log-transform of EDV/ESV clinical features.
 
 **Next hypothesis:** Revert BATCH_SIZE to 8, keep MAX_EPOCHS=60, and add log-transform of EDV and ESV features (right-skewed distributions) to improve clinical branch discrimination.
+
+---
+## Experiment 16 — 2026-03-15T00:34:56Z
+**Experiment ID (commit hash):** 9b5bcd4051e1
+
+**Hypothesis:** Log-transforming EDV and ESV will reduce right-skew and improve clinical branch discrimination.
+
+**Change made:**
+```diff
++ out[:, 2] = torch.log1p(clinical[:, 2])  # log(1 + EDV)
++ out[:, 3] = torch.log1p(clinical[:, 3])  # log(1 + ESV)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6900 |
+| val_acc (std)  | 0.1241 |
+| per_fold_acc   | [0.85, 0.65, 0.65, 0.50, 0.80] |
+| per_class_acc  | NOR=0.70  DCM=0.80  HCM=0.55  MINF=0.70  RV=0.70 |
+| prev best      | 0.7000 |
+
+**Interpretation:** Close to E2 (0.69 vs 0.70) but with higher variance (std=0.1241). Fold 5 jumped to 0.80 but fold 4 dropped to 0.50. The log-transform helps some folds but hurts others. DCM improved to 0.80. Trying to combine log-transform with derived features (BMI+SV) from E7 to get the best of both.
+
+**Next hypothesis:** Combine log-transform of EDV/ESV with derived features BMI+SV (7 features total), keep MAX_EPOCHS=60, BS=8, original arch.

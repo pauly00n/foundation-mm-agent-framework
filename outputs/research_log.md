@@ -329,3 +329,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Much worse (0.62 vs 0.71). Focal Loss and WD=0.2 are both too aggressive. The model underfits on most folds. Label smoothing CE with WD=0.15 is the right balance.
 
 **Next hypothesis:** Revert to Exp 11 config exactly (DROPOUT=0.7, WD=0.15, label_smoothing=0.1, single model, 80 epochs). Try adding a second ResBlock per stage (deeper model) to improve feature extraction without adding too many parameters.
+
+---
+## Experiment 14 — 2026-03-16T05:24Z
+**Experiment ID (commit hash):** a5e56c80f869
+
+**Hypothesis:** Deeper CNN (2 ResBlocks per stage, 2.7M params) will improve feature extraction.
+
+**Change made:**
+```diff
+- 1 ResBlock per stage (1.5M params)
++ 2 ResBlocks per stage (2.7M params)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6500 |
+| val_acc (std)  | 0.0894 |
+| per_fold_acc   | [0.80, 0.60, 0.55, 0.60, 0.70] |
+| per_class_acc  | NOR=0.65  DCM=0.75  HCM=0.50  MINF=0.75  RV=0.60 |
+| prev best      | 0.7100 |
+
+**Interpretation:** Worse (0.65 vs 0.71). More parameters = more overfitting. The 1-ResBlock architecture is better for this small dataset.
+
+**Next hypothesis:** Revert to exact Exp 11 config (1 ResBlock/stage, DROPOUT=0.7, WD=0.15, label_smoothing=0.1). Try reducing augmentation — remove depth flip and reduce intensity jitter/noise. The current augmentation may be too aggressive.

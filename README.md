@@ -12,13 +12,15 @@ result to `outputs/`.
 blackbox-mm-prototype/
 ├── src/
 │   ├── prepare.py      ← FIXED  — data pipeline, clinical features
-│   └── train.py        ← AGENT ITERATES ON THIS
+│   ├── train.py        ← AGENT ITERATES ON THIS
+│   └── plot_progress.py ← progress graph from results
 ├── data/
 │   ├── raw/            ← downloaded ACDC zip + extracted folders
 │   └── processed/      ← .pt tensors per patient
 ├── outputs/
 │   ├── results.jsonl              ← one JSON line per experiment (this run)
 │   ├── confusion_matrices/        ← per-run confusion matrix PNGs
+│   ├── progress_graph.png         ← experiment progress chart
 │   └── research_log.md            ← agent's running hypothesis log
 ├── program.md          ← instructions for the AI agent
 ├── run.log             ← training output from last run (gitignored)
@@ -120,6 +122,25 @@ Example summary output:
   wall_time_s    : 166.4
 ============================================================
 ```
+
+---
+
+## Step 3 — Plot experiment progress
+
+```bash
+uv run src/plot_progress.py
+```
+
+What this does:
+1. Reads `outputs/results.jsonl` (one JSON line per experiment).
+2. Plots **validation loss** for every experiment as a scatter plot.
+3. Draws a green step-line tracking the **current best (lowest) loss**.
+4. Marks **breakthroughs** (new best) as green dots annotated with the git
+   commit message; **regressions** appear as red dots.
+5. Saves the chart to `outputs/progress_graph.png`.
+
+Use this after one or more experiments to visualise how the autonomous
+research run is progressing.
 
 ---
 

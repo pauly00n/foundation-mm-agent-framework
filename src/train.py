@@ -45,7 +45,7 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
 # ===========================================================================
 
-LR           = 2e-4        # AdamW LR — lower for smoother convergence
+LR           = 5e-4        # AdamW LR
 BATCH_SIZE   = 8           # samples per GPU step
 DROPOUT      = 0.7         # higher dropout to combat overfitting
 WEIGHT_DECAY = 0.15        # WD=0.15
@@ -55,11 +55,11 @@ ARCH_NOTES = (
     "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128, 1 ResBlock/stage) + ClinicalEncoder MLP(5→64→128). "
     "Gated fusion. 5-fold CV on 100 patients. N_ENSEMBLE=1. CosineAnnealingLR T_max=80. "
     "DROPOUT=0.7. WD=0.15. H+V+D flip + intensity jitter + noise. "
-    "label_smoothing=0.1. TTA=8. LR=2e-4. BS=8. "
-    "Clinical z-score normalization (5 features). MAX_EPOCHS=80."
+    "label_smoothing=0.1. TTA=8. LR=5e-4. BS=8. "
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=60."
 )
 
-MAX_EPOCHS = 80
+MAX_EPOCHS = 60
 N_ENSEMBLE = 1  # single model per fold
 SWA_START = 999  # disable SWA
 

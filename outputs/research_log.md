@@ -77,3 +77,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Worse than Exp 2 (0.67 vs 0.69). More epochs leads to overfitting — train_acc reaches 0.97+ but val_acc drops. The model uses ~57s per fold with 200 epochs. The sweet spot was 80 epochs (~23s). Should use remaining budget for ensembling multiple models rather than training one model longer.
 
 **Next hypothesis:** Revert to MAX_EPOCHS=80. Try DROPOUT=0.5 (slightly less) and WD=0.05 (less aggressive) — the current regularization may be too strong, preventing the model from learning enough in 80 epochs.
+
+---
+## Experiment 4 — 2026-03-16T04:25Z
+**Experiment ID (commit hash):** c197d67db38f
+
+**Hypothesis:** DROPOUT=0.5, WD=0.05, MAX_EPOCHS=80 — less regularization will let the model learn more.
+
+**Change made:**
+```diff
+- DROPOUT=0.6, WD=0.1, MAX_EPOCHS=200
++ DROPOUT=0.5, WD=0.05, MAX_EPOCHS=80
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6900 |
+| val_acc (std)  | 0.1020 |
+| per_fold_acc   | [0.85, 0.65, 0.65, 0.55, 0.75] |
+| per_class_acc  | NOR=0.80  DCM=0.70  HCM=0.50  MINF=0.80  RV=0.65 |
+| prev best      | 0.6900 |
+
+**Interpretation:** Same as Exp 2 (0.69). The model uses only ~23s per fold — 157s of budget is wasted. HCM is stuck at 0.50. The key insight: with 80 epochs taking only 23s, I can fit ~7 models per fold in the 180s budget. Ensembling multiple diverse models should reduce variance and improve accuracy.
+
+**Next hypothesis:** Implement within-fold ensembling: train N_ENSEMBLE=5 models per fold (each with different random seed), average their predictions at inference. This uses ~115s of the 180s budget and provides ensemble diversity.

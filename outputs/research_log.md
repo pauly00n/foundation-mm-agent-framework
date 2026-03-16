@@ -102,3 +102,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Same as Exp 2 (0.69). The model uses only ~23s per fold — 157s of budget is wasted. HCM is stuck at 0.50. The key insight: with 80 epochs taking only 23s, I can fit ~7 models per fold in the 180s budget. Ensembling multiple diverse models should reduce variance and improve accuracy.
 
 **Next hypothesis:** Implement within-fold ensembling: train N_ENSEMBLE=5 models per fold (each with different random seed), average their predictions at inference. This uses ~115s of the 180s budget and provides ensemble diversity.
+
+---
+## Experiment 5 — 2026-03-16T04:37Z
+**Experiment ID (commit hash):** 28e906e6e0d8
+
+**Hypothesis:** Within-fold ensembling (N_ENSEMBLE=5, 80 epochs each) will reduce variance and improve accuracy through model diversity.
+
+**Change made:**
+```diff
++ N_ENSEMBLE = 5 models per fold
++ evaluate_ensemble_with_tta(): averages TTA predictions across all ensemble models
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6600 |
+| val_acc (std)  | 0.0860 |
+| per_fold_acc   | [0.80, 0.65, 0.60, 0.55, 0.70] |
+| per_class_acc  | NOR=0.75  DCM=0.70  HCM=0.40  MINF=0.85  RV=0.60 |
+| prev best      | 0.6900 |
+
+**Interpretation:** Worse than single model (0.66 vs 0.69). The 5-model ensemble didn't help — HCM dropped to 0.40. Models are too similar (same arch, same data, different seeds only). MINF=0.85 is excellent though! The ensemble is averaging out correct HCM predictions. Need to go back to single model approach but with more epochs.
+
+**Next hypothesis:** Revert to single model (N_ENSEMBLE=1). Try MAX_EPOCHS=120 with DROPOUT=0.5, WD=0.05 — a middle ground between 80 (too few) and 200 (overfitting). Also remove label smoothing (use standard CE) since it may be hurting HCM discrimination.

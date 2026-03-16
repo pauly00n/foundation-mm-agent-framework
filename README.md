@@ -1,5 +1,7 @@
 # automl-cardiac
 
+![progress graph](outputs/progress_graph.png)
+
 Autonomous ML experiment framework for **cardiac MRI classification** on the
 [ACDC dataset](https://www.creatis.insa-lyon.fr/Challenge/acdc/).
 

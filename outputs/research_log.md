@@ -227,3 +227,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Worse (0.63 vs 0.69). 500 epochs overfits despite warm restarts. The model completes all 500 epochs in ~143s. The best config remains 80 epochs (Exp 2). Training longer hurts.
 
 **Next hypothesis:** Revert to Exp 2 config exactly (80 epochs, CosineAnnealingLR, LR=5e-4, DROPOUT=0.6, WD=0.1, label_smoothing=0.1). Try adding Stochastic Weight Averaging (SWA) over the last 20 epochs to smooth the loss landscape and improve generalization.
+
+---
+## Experiment 10 — 2026-03-16T05:08Z
+**Experiment ID (commit hash):** 77752faf0f06
+
+**Hypothesis:** SWA from epoch 60 (averaging last 21 checkpoints) will smooth the loss landscape and improve generalization.
+
+**Change made:**
+```diff
++ SWA: average model weights from epoch 60 to 80 (21 checkpoints)
++ BN stats update after SWA weight averaging
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6600 |
+| val_acc (std)  | 0.1020 |
+| per_fold_acc   | [0.85, 0.65, 0.60, 0.55, 0.65] |
+| per_class_acc  | NOR=0.55  DCM=0.75  HCM=0.55  MINF=0.75  RV=0.70 |
+| prev best      | 0.6900 |
+
+**Interpretation:** SWA didn't help (0.66 vs 0.69). Averaging over 21 checkpoints smooths out discriminative features. Fold 1 still hits 0.85 but other folds are weak. The high variance across folds is the main issue.
+
+**Next hypothesis:** Remove SWA. Try DROPOUT=0.7 (more aggressive) with WD=0.15 — the model is clearly overfitting (train_acc=0.95+ vs val_acc=0.55-0.65 on weak folds). More aggressive regularization may help the weak folds without hurting the strong ones.

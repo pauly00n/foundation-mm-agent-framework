@@ -45,7 +45,7 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
 # ===========================================================================
 
-LR           = 1e-3        # AdamW LR — higher for OneCycleLR
+LR           = 5e-4        # AdamW LR
 BATCH_SIZE   = 8           # samples per GPU step
 DROPOUT      = 0.6         # dropout probability
 WEIGHT_DECAY = 0.1         # WD=0.1
@@ -53,13 +53,13 @@ WEIGHT_DECAY = 0.1         # WD=0.1
 # Architecture notes (free-text, logged to results.jsonl for the agent)
 ARCH_NOTES = (
     "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128, ~1.5M params) + ClinicalEncoder MLP(5→64→128). "
-    "Gated fusion. 5-fold CV on 100 patients. N_ENSEMBLE=1. OneCycleLR max_lr=1e-3. "
+    "Gated fusion. 5-fold CV on 100 patients. N_ENSEMBLE=1. CosineAnnealingWarmRestarts T_0=40. "
     "DROPOUT=0.6. WD=0.1. H+V+D flip + intensity jitter + noise. "
-    "Class-weighted CE (HCM=2.0, RV=1.5) + label_smoothing=0.1. TTA=8. "
-    "LR=1e-3. BS=8. Clinical z-score normalization (5 features). MAX_EPOCHS=80."
+    "label_smoothing=0.1. TTA=8. LR=5e-4. BS=8. "
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=500 (budget-limited)."
 )
 
-MAX_EPOCHS = 80
+MAX_EPOCHS = 500  # budget will naturally stop training at ~180s per fold
 N_ENSEMBLE = 1  # single model per fold
 
 # Training budget (seconds) per fold — do NOT change this
@@ -598,13 +598,8 @@ def main():
             model     = MultiModalCardiacNet(num_classes=NUM_CLASSES, dropout=DROPOUT).to(DEVICE)
             optimizer = optim.AdamW(model.parameters(), lr=LR, weight_decay=WEIGHT_DECAY)
             scaler    = GradScaler(enabled=USE_AMP)
-            steps_per_epoch = max(1, len(train_loader))
-            scheduler = optim.lr_scheduler.OneCycleLR(
-                optimizer, max_lr=LR, epochs=MAX_EPOCHS,
-                steps_per_epoch=1, pct_start=0.1, anneal_strategy='cos'
-            )
-            class_weights = torch.tensor([1.0, 1.0, 2.0, 1.0, 1.5], device=DEVICE)  # NOR, DCM, HCM, MINF, RV
-            criterion = nn.CrossEntropyLoss(weight=class_weights, label_smoothing=0.1)
+            scheduler = optim.lr_scheduler.CosineAnnealingWarmRestarts(optimizer, T_0=40, T_mult=2, eta_min=1e-6)
+            criterion = nn.CrossEntropyLoss(label_smoothing=0.1)
 
             epoch = 0
             timed_out = False

@@ -127,3 +127,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Worse than single model (0.66 vs 0.69). The 5-model ensemble didn't help — HCM dropped to 0.40. Models are too similar (same arch, same data, different seeds only). MINF=0.85 is excellent though! The ensemble is averaging out correct HCM predictions. Need to go back to single model approach but with more epochs.
 
 **Next hypothesis:** Revert to single model (N_ENSEMBLE=1). Try MAX_EPOCHS=120 with DROPOUT=0.5, WD=0.05 — a middle ground between 80 (too few) and 200 (overfitting). Also remove label smoothing (use standard CE) since it may be hurting HCM discrimination.
+
+---
+## Experiment 6 — 2026-03-16T04:41Z
+**Experiment ID (commit hash):** 1be371a21730
+
+**Hypothesis:** Single model, MAX_EPOCHS=120, standard CE (no label smoothing) will improve HCM discrimination.
+
+**Change made:**
+```diff
+- N_ENSEMBLE=5, MAX_EPOCHS=80, label_smoothing=0.1
++ N_ENSEMBLE=1, MAX_EPOCHS=120, standard CE (no label smoothing)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6200 |
+| val_acc (std)  | 0.1030 |
+| per_fold_acc   | [0.75, 0.65, 0.50, 0.50, 0.70] |
+| per_class_acc  | NOR=0.70  DCM=0.65  HCM=0.50  MINF=0.70  RV=0.55 |
+| prev best      | 0.6900 |
+
+**Interpretation:** Worse (0.62 vs 0.69). Removing label smoothing hurt significantly. Label smoothing was providing important regularization. The best config remains Exp 2 (DROPOUT=0.6, WD=0.1, MAX_EPOCHS=80, label_smoothing=0.1).
+
+**Next hypothesis:** Revert to Exp 2 config (DROPOUT=0.6, WD=0.1, MAX_EPOCHS=80, label_smoothing=0.1). Try N_ENSEMBLE=3 (fewer ensemble members, more diverse) with class-weighted CE to boost HCM and RV.

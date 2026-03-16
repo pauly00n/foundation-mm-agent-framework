@@ -47,19 +47,18 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 
 LR           = 5e-4        # AdamW LR
 BATCH_SIZE   = 8           # samples per GPU step
-DROPOUT      = 0.6         # dropout probability — increased to combat overfitting
-WEIGHT_DECAY = 0.1         # stronger regularization for small dataset
+DROPOUT      = 0.5         # dropout probability
+WEIGHT_DECAY = 0.05        # WD=0.05
 
 # Architecture notes (free-text, logged to results.jsonl for the agent)
 ARCH_NOTES = (
-    "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128, ~1.16M params) + ClinicalEncoder MLP(5→64→128). "
-    "Gated fusion: gate=sigmoid(Linear(128,128)) applied to MRI feat, concat(gated_mri, clinical)→Linear(256,5). "
-    "5-fold CV on 100 patients. CosineAnnealingLR T_max=80. "
-    "DROPOUT=0.6. WD=0.1. H+V+D flip + intensity jitter + noise. label_smoothing=0.1. TTA=8. LR=5e-4. BS=8. "
-    "Clinical z-score normalization (5 features). MAX_EPOCHS=200."
+    "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128, ~1.5M params) + ClinicalEncoder MLP(5→64→128). "
+    "Gated fusion. 5-fold CV on 100 patients. CosineAnnealingLR T_max=80. "
+    "DROPOUT=0.5. WD=0.05. H+V+D flip + intensity jitter + noise. label_smoothing=0.1. TTA=8. LR=5e-4. BS=8. "
+    "Clinical z-score normalization (5 features). MAX_EPOCHS=80."
 )
 
-MAX_EPOCHS = 200
+MAX_EPOCHS = 80
 
 # Training budget (seconds) per fold — do NOT change this
 BUDGET_SECONDS = 180  # 3 minutes per fold

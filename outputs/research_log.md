@@ -304,3 +304,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Slightly worse than single model (0.70 vs 0.71). Ensemble is averaging out correct predictions. Single model with strong regularization is better. MINF=0.85 is excellent.
 
 **Next hypothesis:** Single model (N_ENSEMBLE=1), DROPOUT=0.7, WD=0.2 (even stronger WD). Also try Focal Loss (gamma=2.0) instead of CE to focus on hard examples like HCM.
+
+---
+## Experiment 13 — 2026-03-16T05:21Z
+**Experiment ID (commit hash):** 604119960df3
+
+**Hypothesis:** Focal Loss (gamma=2.0) with WD=0.2 will focus on hard examples and improve HCM.
+
+**Change made:**
+```diff
+- WD=0.15, CE with label_smoothing=0.1
++ WD=0.2, Focal Loss (gamma=2.0)
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6200 |
+| val_acc (std)  | 0.1208 |
+| per_fold_acc   | [0.85, 0.55, 0.60, 0.60, 0.50] |
+| per_class_acc  | NOR=0.75  DCM=0.60  HCM=0.45  MINF=0.85  RV=0.45 |
+| prev best      | 0.7100 |
+
+**Interpretation:** Much worse (0.62 vs 0.71). Focal Loss and WD=0.2 are both too aggressive. The model underfits on most folds. Label smoothing CE with WD=0.15 is the right balance.
+
+**Next hypothesis:** Revert to Exp 11 config exactly (DROPOUT=0.7, WD=0.15, label_smoothing=0.1, single model, 80 epochs). Try adding a second ResBlock per stage (deeper model) to improve feature extraction without adding too many parameters.

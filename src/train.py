@@ -45,7 +45,7 @@ from prepare import NUM_CLASSES, IDX_TO_LABEL, DATA_PROC  # noqa: E402
 # ★  HYPERPARAMETERS — agent modifies this block between experiments  ★
 # ===========================================================================
 
-LR           = 5e-4        # AdamW LR
+LR           = 2e-4        # AdamW LR — lower for smoother convergence
 BATCH_SIZE   = 8           # samples per GPU step
 DROPOUT      = 0.7         # higher dropout to combat overfitting
 WEIGHT_DECAY = 0.15        # WD=0.15
@@ -54,8 +54,8 @@ WEIGHT_DECAY = 0.15        # WD=0.15
 ARCH_NOTES = (
     "MRI+Clinical fusion: ResNet+SE (1→16→32→64→128, 1 ResBlock/stage) + ClinicalEncoder MLP(5→64→128). "
     "Gated fusion. 5-fold CV on 100 patients. N_ENSEMBLE=1. CosineAnnealingLR T_max=80. "
-    "DROPOUT=0.7. WD=0.15. H flip only (no V/D flip, no noise). "
-    "label_smoothing=0.1. TTA=2 (base + H flip). LR=5e-4. BS=8. "
+    "DROPOUT=0.7. WD=0.15. H+V+D flip + intensity jitter + noise. "
+    "label_smoothing=0.1. TTA=8. LR=2e-4. BS=8. "
     "Clinical z-score normalization (5 features). MAX_EPOCHS=80."
 )
 
@@ -354,11 +354,19 @@ def train_one_epoch(
         # Z-score normalize clinical features
         clinical = normalize_clinical(clinical)
 
-        # Augmentation: H flip only (minimal augmentation)
+        # Augmentation: H flip, V flip, depth flip, intensity jitter, Gaussian noise
         B = volumes.size(0)
         for i in range(B):
             if torch.rand(1).item() < 0.5:
                 volumes[i] = torch.flip(volumes[i], dims=[-1])   # H flip
+            if torch.rand(1).item() < 0.5:
+                volumes[i] = torch.flip(volumes[i], dims=[-2])   # V flip
+            if torch.rand(1).item() < 0.3:
+                volumes[i] = torch.flip(volumes[i], dims=[-3])   # depth flip
+        # Intensity jitter (batch-level for speed)
+        volumes = volumes * (1.0 + 0.05 * torch.randn(B, 1, 1, 1, 1, device=DEVICE))
+        # Gaussian noise
+        volumes = volumes + 0.01 * torch.randn_like(volumes)
 
         optimizer.zero_grad(set_to_none=True)
 
@@ -390,7 +398,8 @@ def evaluate_with_tta(model, loader):
     total_samples = 0
     conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int32)
     tta_flips = [
-        [], [[-1]],  # base + H flip only
+        [], [[-1]], [[-2]], [[-3]],
+        [[-1], [-2]], [[-1], [-3]], [[-2], [-3]], [[-1], [-2], [-3]],
     ]
     for batch in loader:
         volumes, clinical, labels = batch
@@ -446,7 +455,8 @@ def evaluate_ensemble_with_tta(models, loader):
     total_samples = 0
     conf_matrix = np.zeros((NUM_CLASSES, NUM_CLASSES), dtype=np.int32)
     tta_flips = [
-        [], [[-1]],  # base + H flip only
+        [], [[-1]], [[-2]], [[-3]],
+        [[-1], [-2]], [[-1], [-3]], [[-2], [-3]], [[-1], [-2], [-3]],
     ]
     for batch in loader:
         volumes, clinical, labels = batch

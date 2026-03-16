@@ -202,3 +202,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Worse (0.65 vs 0.69). OneCycleLR with LR=1e-3 is too aggressive. NOR dropped to 0.50. The best config remains Exp 2 (CosineAnnealingLR, LR=5e-4, single model, 80 epochs).
 
 **Next hypothesis:** Revert to exact Exp 2 config (LR=5e-4, CosineAnnealingLR, DROPOUT=0.6, WD=0.1, MAX_EPOCHS=80, label_smoothing=0.1, no class weights). But set MAX_EPOCHS=500 and let the budget (180s) naturally stop training — this way the model trains as many epochs as possible within the budget, using CosineAnnealingWarmRestarts for cyclic LR.
+
+---
+## Experiment 9 — 2026-03-16T05:04Z
+**Experiment ID (commit hash):** 3c8128ce554b
+
+**Hypothesis:** MAX_EPOCHS=500 with CosineAnnealingWarmRestarts T_0=40 will use the full 180s budget and find better optima through cyclic LR.
+
+**Change made:**
+```diff
+- MAX_EPOCHS=80, CosineAnnealingLR
++ MAX_EPOCHS=500, CosineAnnealingWarmRestarts T_0=40, T_mult=2
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6300 |
+| val_acc (std)  | 0.0812 |
+| per_fold_acc   | [0.75, 0.70, 0.60, 0.55, 0.55] |
+| per_class_acc  | NOR=0.70  DCM=0.70  HCM=0.55  MINF=0.65  RV=0.55 |
+| prev best      | 0.6900 |
+
+**Interpretation:** Worse (0.63 vs 0.69). 500 epochs overfits despite warm restarts. The model completes all 500 epochs in ~143s. The best config remains 80 epochs (Exp 2). Training longer hurts.
+
+**Next hypothesis:** Revert to Exp 2 config exactly (80 epochs, CosineAnnealingLR, LR=5e-4, DROPOUT=0.6, WD=0.1, label_smoothing=0.1). Try adding Stochastic Weight Averaging (SWA) over the last 20 epochs to smooth the loss landscape and improve generalization.

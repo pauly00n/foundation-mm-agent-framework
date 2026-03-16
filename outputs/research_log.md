@@ -1,4 +1,3 @@
----
 ## Experiment 1 — 2026-03-14T23:43:35Z
 **Experiment ID (commit hash):** 3b50037375e7
 

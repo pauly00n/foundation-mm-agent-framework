@@ -3,3 +3,4 @@
 data/*
 outputs/confusion*
 run.log
+**/.ipynb_checkpoints/

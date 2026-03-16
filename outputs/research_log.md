@@ -177,3 +177,28 @@ First experiment — no changes from starting config.
 **Interpretation:** Lower variance (0.075) but lower mean (0.67 vs 0.69). HCM improved to 0.60 (from 0.45-0.50 in Exp 2). Class weights are helping HCM but ensemble is averaging out some correct predictions. The best approach is single model with the right hyperparameters.
 
 **Next hypothesis:** Single model (N_ENSEMBLE=1), keep class-weighted CE (HCM=2.0, RV=1.5) + label_smoothing=0.1, DROPOUT=0.6, WD=0.1, MAX_EPOCHS=80. Also try LR=1e-3 (higher) with OneCycleLR for faster convergence in 80 epochs.
+
+---
+## Experiment 8 — 2026-03-16T04:51Z
+**Experiment ID (commit hash):** 058018ccc705
+
+**Hypothesis:** LR=1e-3 with OneCycleLR will converge faster in 80 epochs.
+
+**Change made:**
+```diff
+- LR=5e-4, CosineAnnealingLR, N_ENSEMBLE=3
++ LR=1e-3, OneCycleLR, N_ENSEMBLE=1
+```
+
+**Results:**
+| Metric | Value |
+|--------|-------|
+| val_acc (mean) | 0.6500 |
+| val_acc (std)  | 0.0949 |
+| per_fold_acc   | [0.80, 0.70, 0.65, 0.55, 0.55] |
+| per_class_acc  | NOR=0.50  DCM=0.75  HCM=0.60  MINF=0.75  RV=0.65 |
+| prev best      | 0.6900 |
+
+**Interpretation:** Worse (0.65 vs 0.69). OneCycleLR with LR=1e-3 is too aggressive. NOR dropped to 0.50. The best config remains Exp 2 (CosineAnnealingLR, LR=5e-4, single model, 80 epochs).
+
+**Next hypothesis:** Revert to exact Exp 2 config (LR=5e-4, CosineAnnealingLR, DROPOUT=0.6, WD=0.1, MAX_EPOCHS=80, label_smoothing=0.1, no class weights). But set MAX_EPOCHS=500 and let the budget (180s) naturally stop training — this way the model trains as many epochs as possible within the budget, using CosineAnnealingWarmRestarts for cyclic LR.
